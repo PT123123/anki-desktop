@@ -1,6 +1,7 @@
 /* Copyright: Ankitects Pty Ltd and contributors
  * License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html */
 
+@use "sass:map";
 @use "../../../../../ts/lib/sass/root-vars";
 @use "../../../../../ts/lib/sass/vars" as *;
 @use "../../../../../ts/lib/sass/card-counts";
@@ -19,15 +20,138 @@ body {
 }
 
 #middle td[align="center"] {
-    padding-top: 10px;
+    padding-top: 22px;
+    padding-bottom: 10px;
     position: relative;
 }
 
+// Ease-button accent colours: again=red, hard=amber, good=blue, easy=green.
+$ease-themes: (
+    1: (
+        top: #e7635a,
+        bottom: #c23a2e,
+        glow: rgba(194, 58, 46, 0.45),
+    ),
+    2: (
+        top: #f4b13f,
+        bottom: #d97e12,
+        glow: rgba(217, 126, 18, 0.45),
+    ),
+    3: (
+        top: #5f9ff4,
+        bottom: #2e66cf,
+        glow: rgba(46, 102, 207, 0.45),
+    ),
+    4: (
+        top: #52c982,
+        bottom: #1f9f5b,
+        glow: rgba(31, 159, 91, 0.45),
+    ),
+);
+
 button {
-    min-width: 60px;
+    min-width: 92px;
     white-space: nowrap;
-    margin: 9px;
+    margin: 10px 10px;
     position: relative;
+    -webkit-appearance: none;
+    appearance: none;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 11px 26px;
+    border: none;
+    border-radius: 14px;
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+    line-height: 1.1;
+    color: #fff;
+    text-shadow: 0 1px 1px rgba(0 0 0 / 0.25);
+    background: linear-gradient(180deg, var(--button-gradient-start) 0%, var(--button-bg) 100%);
+    box-shadow: 0 2px 6px rgba(0 0 0 / 0.18),
+        inset 0 1px 0 rgba(255 255 255 / 0.25);
+    transition: transform 160ms cubic-bezier(0.34, 1.4, 0.64, 1), box-shadow 160ms ease,
+        filter 160ms ease;
+
+    &:hover {
+        filter: brightness(1.07);
+        transform: translateY(-2px);
+        box-shadow: 0 6px 16px rgba(0 0 0 / 0.24),
+            inset 0 1px 0 rgba(255 255 255 / 0.3);
+    }
+
+    &:active {
+        transform: translateY(1px);
+        filter: brightness(0.96);
+        box-shadow: inset 0 2px 6px rgba(0 0 0 / 0.35);
+    }
+
+    &:focus-visible {
+        outline: 2px solid color(border-focus);
+        outline-offset: 2px;
+    }
+
+    // Per-ease colour theming.
+    @each $ease, $theme in $ease-themes {
+        &[data-ease="#{$ease}"] {
+            $top: map.get($theme, top);
+            $bottom: map.get($theme, bottom);
+            $glow: map.get($theme, glow);
+            background: linear-gradient(180deg, $top 0%, $bottom 100%);
+            box-shadow: 0 3px 10px $glow, inset 0 1px 0 rgba(255 255 255 / 0.32),
+                inset 0 -2px 4px rgba(0 0 0 / 0.14);
+
+            &:hover {
+                box-shadow: 0 8px 20px $glow, inset 0 1px 0 rgba(255 255 255 / 0.35),
+                    inset 0 -2px 4px rgba(0 0 0 / 0.14);
+            }
+
+            // Interval preview chip inherits the button's hue.
+            .nobold {
+                background: linear-gradient(180deg, $top 0%, $bottom 100%);
+                color: #fff;
+                box-shadow: 0 2px 6px $glow;
+            }
+        }
+    }
+
+    // The "Good" button is the default ease — give it extra emphasis.
+    &#defease {
+        font-weight: 700;
+    }
+
+    // Show-answer button: deep navy, pairs with the ease palette.
+    &#ansbut {
+        background: linear-gradient(180deg, #2c5a86 0%, #0a2442 100%);
+        box-shadow: 0 3px 10px rgba(10, 36, 66, 0.4),
+            inset 0 1px 0 rgba(255 255 255 / 0.2);
+
+        &:hover {
+            box-shadow: 0 8px 20px rgba(10, 36, 66, 0.5),
+                inset 0 1px 0 rgba(255 255 255 / 0.25);
+        }
+    }
+}
+
+// Interval/count chips floating above the buttons.
+.nobold,
+.stattxt {
+    position: absolute;
+    white-space: nowrap;
+    font-size: 11px;
+    top: -5px;
+    left: 50%;
+    transform: translate(-50%, -100%);
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    display: inline-block;
+    padding: 2px 9px;
+    border-radius: 999px;
+    background: color(canvas-elevated);
+    color: color(fg-subtle);
+    box-shadow: 0 1px 4px rgba(0 0 0 / 0.18);
 }
 
 .hitem {
@@ -49,18 +173,6 @@ button {
 
 :focus {
     border-color: color(border-focus);
-}
-
-.nobold,
-.stattxt {
-    position: absolute;
-    white-space: nowrap;
-    font-size: small;
-    top: -3px;
-    left: 50%;
-    transform: translate(-50%, -100%);
-    font-weight: normal;
-    display: inline-block;
 }
 
 .spacer {
