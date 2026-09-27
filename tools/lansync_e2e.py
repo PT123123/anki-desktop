@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import requests  # noqa: E402
 
 from lan_sync import crypto  # noqa: E402
+from lan_sync import pairqr  # noqa: E402
 from lan_sync.engine import LanEngine  # noqa: E402
 from lan_sync.protocol import (  # noqa: E402
     HEADER_ENVELOPE,
@@ -37,6 +38,7 @@ from lan_sync.protocol import (  # noqa: E402
     MAGIC_V2,
     MODE_APKG,
     MODE_HUB,
+    is_site_local_ipv4,
 )
 from lan_sync.scheduler import Scheduler  # noqa: E402
 
@@ -162,6 +164,47 @@ def sealed_request(target: LanEngine, peer_id: str, route: str, payload: dict,
 def post_envelope(url: str, envelope: dict, kid: str) -> requests.Response:
     return requests.post(url, data=json.dumps(envelope).encode(),
                          headers={HEADER_MAGIC: MAGIC_V2, HEADER_KID: kid}, timeout=20)
+
+
+def arm_qr(a: LanEngine, b: LanEngine) -> None:
+    """SPEC-v2 §4.7 配对二维码票据：本臂只验**票据传输保真**与**票据里的码可配对**。
+
+    台架两端绑 127.0.0.1，而票据按 §3.7 只允许 site-local IPv4，所以这里用一个合法但不可达的
+    内网地址来证明"票据→字段→commit"这条链正确，**真机扫码（票据里的 IP 真能连上）留在 §11**。
+    commit 本身走 loopback，用的却是从票据解码出来的那份码——证明票据携带的凭证是真的能配上的码。
+    """
+    session = a.begin_pairing()
+    code = session["pair_code"]
+    ticket_text = pairqr.encode_ticket(
+        a.identity.device_id, a.identity.name, "desktop", "10.10.10.10", a.port, code)
+    check("E7qr::ticket-text-prefixed", ticket_text.startswith(pairqr.PAIR_QR_MAGIC + " "),
+          ticket_text[:24])
+
+    ticket = pairqr.decode_ticket(ticket_text)
+    check("E7qr::ticket-decodes-to-showing-endpoint",
+          ticket.host == "10.10.10.10" and ticket.port == a.port
+          and ticket.device_id == a.identity.device_id,
+          f"{ticket.endpoint} id={ticket.device_id[:8]}")
+    check("E7qr::pair-code-survives-ticket-roundtrip", ticket.pair_code == code,
+          f"{ticket.pair_code} == {code}")
+
+    # 用票据里解出来的码 + loopback 端点完成配对：证明票据承载的是一份可用的配对凭证，
+    # 而不只是一个字符串往返。
+    result = b.pair_with(f"127.0.0.1:{a.port}", ticket.pair_code)
+    check("E7qr::ticket-carried-code-pairs", bool(result.get("security_code")),
+          f"security={result.get('security_code')}")
+
+    sec_a = (a.store.device(b.identity.device_id) or {}).get("security_code")
+    check("E7qr::security-codes-match-after-qr-pair", sec_a == result["security_code"],
+          f"A={sec_a} B={result['security_code']}")
+
+    # 陌生/非本项目二维码：解码必须本地拒绝而不是抛解析异常（摄像头会扫到任意码）。
+    refused = None
+    try:
+        pairqr.decode_ticket("https://example.com/not-a-pair-qr")
+    except pairqr.PairQrError as exc:
+        refused = exc.code
+    check("E7qr::foreign-qr-rejected-not-our-qr", refused == "not_our_qr", str(refused))
 
 
 # ------------------------------------------------------------------- 各臂
@@ -504,6 +547,7 @@ def main() -> int:
           f"{a.identity.device_id[:8]} vs {b.identity.device_id[:8]}")
 
     try:
+        arm_qr(a, b)
         paired = arm_pair(a, b)
         if not paired:
             bail("E2-E6", ["鉴权负例", "apkg 一轮", "hub 一轮", "调度策略", "日志"],

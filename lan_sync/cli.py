@@ -12,6 +12,8 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
+import shutil
 import signal
 import sys
 import time
@@ -42,9 +44,16 @@ def build_parser() -> argparse.ArgumentParser:
                        help="同步周期档位（秒）")
 
     pair = sub.add_parser("pair", help="配对")
-    pair.add_argument("action", choices=["show-code", "join", "confirm"])
-    pair.add_argument("peer", nargs="?", help="join: peer_id 或 ip:port")
+    pair.add_argument("action",
+                      choices=["show-code", "join", "confirm", "show-qr", "scan-qr"])
+    pair.add_argument("peer", nargs="?",
+                      help="join: peer_id 或 ip:port / confirm: peer_id / scan-qr: 二维码图片路径")
     pair.add_argument("code", nargs="?", help="join: 对方显示的 6 位码 / confirm: 4 位安全码")
+    pair.add_argument("--out", type=Path, default=None,
+                      help="show-qr: 把二维码写成图片文件（.svg 或 --svg 出矢量；否则 PNG）")
+    pair.add_argument("--svg", action="store_true", help="show-qr: --out 时写 SVG 而不是 PNG")
+    pair.add_argument("--no-terminal", dest="terminal", action="store_false",
+                      help="show-qr: 不在终端打印二维码（只出 JSON/图片）")
 
     sync = sub.add_parser("sync", help="立刻跑一轮")
     sync.add_argument("peer", nargs="?", help="留空则同步所有在线已配对设备")
@@ -61,6 +70,12 @@ def build_parser() -> argparse.ArgumentParser:
     config = sub.add_parser("config", help="读/写配置项")
     config.add_argument("key")
     config.add_argument("value", nargs="?")
+
+    addon = sub.add_parser("addon-install",
+                           help="把「工具 → 局域网配对二维码」装进 Anki 的 add-ons 目录")
+    addon.add_argument("--anki-desktop", type=Path, default=None,
+                       help="仓库根，默认取当前 lan_sync 的上级目录")
+
     return parser
 
 
@@ -122,6 +137,36 @@ def cmd_pair(args) -> int:
     try:
         if args.action == "show-code":
             _print(engine.begin_pairing())
+        elif args.action == "show-qr":
+            from . import qrimg  # 惰性：只有出码才需要 segno
+
+            info = engine.show_pair_qr()
+            if args.out is not None:
+                if args.svg or args.out.suffix.lower() == ".svg":
+                    written = qrimg.render_svg(info["ticket_text"], args.out)
+                else:
+                    written = qrimg.render_png(info["ticket_text"], args.out)
+                info["qr_image"] = str(written)
+            if getattr(args, "terminal", True):
+                print(qrimg.terminal_ascii(info["ticket_text"]))
+                print("（终端二维码若扫不出：反转明暗，或用 --out 出一张图片再扫）")
+            info.pop("ticket_text")  # 不把票据原文重复进摘要；图片/终端已含
+            _print(info)
+        elif args.action == "scan-qr":
+            if not args.peer:
+                print("用法: pair scan-qr <二维码图片路径>", file=sys.stderr)
+                return 2
+            from . import qrimg  # 惰性：只有扫码才需要 opencv
+
+            try:
+                text = qrimg.decode_image(args.peer)
+            except (FileNotFoundError, ValueError) as exc:
+                print(f"读图失败：{exc}", file=sys.stderr)
+                return 2
+            if not text:
+                print("图片里没识别到二维码", file=sys.stderr)
+                return 1
+            _print(engine.scan_ticket_text(text))
         elif args.action == "join":
             if not args.peer or not args.code:
                 print("用法: pair join <peer_id|ip:port> <6位码>", file=sys.stderr)
@@ -218,6 +263,45 @@ def cmd_config(args) -> int:
     return 0
 
 
+def anki_addons_dir() -> Path:
+    """Anki 的 add-ons 目录（和它自己算 profile 目录用的是同一套环境变量）。"""
+    if home := os.environ.get("ANKI_HOME"):
+        base = Path(home)
+    elif sys.platform == "win32":
+        base = Path(os.environ["APPDATA"]) / "Anki2"
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support" / "Anki2"
+    else:
+        xdg = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+        base = Path(xdg) / "Anki2"
+    return base / "addons21"
+
+
+ADDON_ID = "lansync_pairqr"
+
+
+def cmd_addon_install(args) -> int:
+    """把 `lan_sync/addon/` 拷进 Anki 的 add-ons 目录，并记下仓库根。
+
+    壳里不放逻辑，只有 `sys.path` + 菜单注册，所以重装只在改壳本身时才需要。
+    """
+    repo_root = (args.anki_desktop or Path(__file__).resolve().parent.parent).resolve()
+    if not (repo_root / "lan_sync" / "aqt_hook.py").is_file():
+        _print({"error": f"{repo_root} 不是 anki-desktop 仓库根（缺 lan_sync/aqt_hook.py）"})
+        return 1
+    src = Path(__file__).resolve().parent / "addon"
+    dest = anki_addons_dir() / ADDON_ID
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(src, dest, dirs_exist_ok=True)
+    (dest / "config.json").write_text(
+        json.dumps({"anki_desktop": str(repo_root)}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    _print({"addons_dir": str(dest), "anki_desktop": str(repo_root),
+            "next": "重启 Anki，工具菜单里就有「局域网配对二维码…」"})
+    return 0
+
+
 def cmd_serve(args) -> int:
     engine = _engine(args)
     engine.set_cfg("enabled", True)
@@ -262,6 +346,7 @@ COMMANDS = {
     "hub": cmd_hub,
     "v1": cmd_v1,
     "config": cmd_config,
+    "addon-install": cmd_addon_install,
     "serve": cmd_serve,
 }
 

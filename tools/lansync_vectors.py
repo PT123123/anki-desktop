@@ -23,6 +23,7 @@ REPO = DESKTOP.parent
 sys.path.insert(0, str(DESKTOP))
 
 from lan_sync import crypto  # noqa: E402
+from lan_sync import pairqr  # noqa: E402
 
 # 固定输入：任何一端改这些常量都必须同时改另一端。
 DEVICE_A = "11111111-1111-4111-8111-111111111111"
@@ -34,6 +35,12 @@ TS = 1_700_000_000
 NONCE = bytes(range(12))
 ROUTE = "devices/sync"
 PLAINTEXT = b'{"since":0}'
+
+# 配对二维码票据（§4.7）的固定输入。第二个用非 ASCII 名钉死两端对 unicode/转义的一致处理。
+QR_HOST_DESKTOP = "192.168.1.20"
+QR_HOST_ANDROID = "10.0.0.7"
+QR_NAME_DESKTOP = "Desk-A"
+QR_NAME_ANDROID = "手机-π\""  # 含非 ASCII 与双引号，考验两端 JSON 转义一致
 
 TARGETS = [
     REPO / "docs" / "lan-sync" / "vectors.json",
@@ -54,6 +61,21 @@ def build() -> dict:
 
     wrap_key = crypto._pair_code_key(PAIR_CODE)
     pair_envelope = crypto.seal(CONTRIB_A, wrap_key, "pair/wrap", "pair", now=TS, nonce=NONCE)
+
+    qr_desktop = pairqr.encode_ticket(
+        DEVICE_A, QR_NAME_DESKTOP, "desktop", QR_HOST_DESKTOP, 5600, PAIR_CODE)
+    qr_android = pairqr.encode_ticket(
+        DEVICE_B, QR_NAME_ANDROID, "android", QR_HOST_ANDROID, 5611, PAIR_CODE)
+    # 两端都要把自己的编码结果、以及把对端的文本解回同样的字段。
+    qr_inputs_desktop = {
+        "device_id": DEVICE_A, "name": QR_NAME_DESKTOP, "kind": "desktop",
+        "host": QR_HOST_DESKTOP, "port": 5600, "pair_code": PAIR_CODE,
+    }
+    qr_inputs_android = {
+        "device_id": DEVICE_B, "name": QR_NAME_ANDROID, "kind": "android",
+        "host": QR_HOST_ANDROID, "port": 5611, "pair_code": PAIR_CODE,
+    }
+
     return {
         "_comment": "SPEC-v2 §4.6 互操作向量；由 anki-desktop/tools/lansync_vectors.py 生成，勿手改",
         "inputs": {
@@ -82,6 +104,11 @@ def build() -> dict:
             # apkg/import 头里放的是整段信封 JSON 的 urlsafe-b64
             "header_urlsafe_b64": base64.urlsafe_b64encode(
                 json.dumps(envelope, separators=(",", ":")).encode("utf-8")).decode("ascii"),
+        },
+        "pair_qr": {
+            "magic": pairqr.PAIR_QR_MAGIC,
+            "desktop": {"inputs": qr_inputs_desktop, "text": qr_desktop},
+            "android": {"inputs": qr_inputs_android, "text": qr_android},
         },
         "checksum_sha256": None,
     }

@@ -24,11 +24,12 @@ from pathlib import Path
 
 from . import crypto
 from . import discovery as disc
+from . import pairqr
 from . import server as lan_server
 from .anki_bridge import Busy, CollectionBridge, HubSeedRequired
 from .client import PeerClient
 from .hub import HubServer
-from .identity import Identity, load_or_create
+from .identity import Identity, best_address, load_or_create
 from .protocol import (
     HUB_PORT_END,
     HUB_PORT_START,
@@ -230,6 +231,9 @@ class LanEngine:
 
     def on_port_bound(self, port: int) -> None:
         self.port = port
+        # 让独立的 CLI/GUI 进程（同一个 sync.db）也能读到当前真实绑定端口——
+        # 5600 被占时会回退，出码不能猜。
+        self.store.set_meta("bound_port", str(port))
 
     # ---------------------------------------------------------------- 设备表
     def register_peer(self, info: PeerInfo, host: str, port: int, via: str) -> None:
@@ -349,6 +353,42 @@ class LanEngine:
         self.register_peer(peer_info, host, port, disc.VIA_MANUAL)
         return {"peer_id": peer_info.device_id, "name": peer_info.name,
                 "security_code": crypto.gen_security_code(shared)}
+
+    # ------------------------------------------------------------ 配对二维码（§4.7）
+    def advertise_endpoint(self) -> int:
+        """出码时写进票据的本机端口。
+
+        端口取当前绑定值；本进程没在 serve 时回读 `serve` 写进同一份库的 `bound_port`
+        （CLI 的出码和常驻监听是两个进程，靠共享 `sync.db` 对接）。都没有才退默认。
+        """
+        port = self.port
+        if not port:
+            stored = self.store.get_meta("bound_port")
+            port = int(stored) if stored else TCP_PORT_START
+        return port
+
+    def show_pair_qr(self) -> dict:
+        """显示端：本机开会话拿活码 + 编成票据文本。渲染成图片/终端是 CLI/GUI 的事。
+
+        前置条件：得有监听在对端能连到的地址上（`serve` 在跑，或 GUI 里同步开着）——
+        否则扫码端的 commit 无处可发。这里尽量给出真实绑定端口，但如果根本没在监听，
+        二维码扫了也配不上，调用方应据此提示。
+        """
+        session = self.begin_pairing()
+        host = best_address()
+        if not host:
+            raise ValueError("本机没有可宣告的内网 IPv4，无法出码（先连上 Wi-Fi/局域网）")
+        port = self.advertise_endpoint()
+        text = pairqr.encode_ticket(self.identity.device_id, self.identity.name,
+                                    KIND_DESKTOP, host, port, session["pair_code"])
+        return {**session, "host": host, "port": port, "ticket_text": text,
+                "note": "扫码只是交接地址+配对码；配对完成后仍要核对两端的安全码是否一致"}
+
+    def scan_ticket_text(self, text: str) -> dict:
+        """扫码端：解析票据文本 → 按 h:p 走既有 commit。票据文本来自图片解码或剪贴板。"""
+        ticket = pairqr.decode_ticket(text)
+        result = self.pair_with(ticket.endpoint, ticket.pair_code)
+        return {**result, "scanned_from": ticket.endpoint, "peer_name": ticket.name}
 
     def _resolve_endpoint(self, ref: str) -> tuple[str, int]:
         state = self.peer_state(ref)
